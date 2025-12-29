@@ -1,6 +1,7 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+from st_gsheets_connection import GSheetsConnection  # <--- Esta es la línea clave
 import pandas as pd
+# ... el resto del código igual
 import pdfplumber
 import re
 
