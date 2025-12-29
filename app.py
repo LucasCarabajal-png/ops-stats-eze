@@ -1,76 +1,69 @@
 import streamlit as st
-from st_gsheets_connection import GSheetsConnection  # <--- Esta es la línea clave
+from st_gsheets_connection import GSheetsConnection
 import pandas as pd
-# ... el resto del código igual
 import pdfplumber
 import re
 
-st.set_page_config(page_title="United EZE Ops Stats", layout="wide")
+st.set_page_config(page_title="Ops Stats EZE", layout="wide")
 
-# Conexión a Google Sheets
+st.title("✈️ United EZE - Ops Stats Automator")
+
+# Conexión con manejo de error suave
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error("Error de conexión a Google Sheets. Revisa los Secrets.")
+    st.warning("Configurando conexión... Si este mensaje persiste, revisa los Secrets.")
 
-def extract_data(pdf_file, log_file, cargo_file):
-    # --- Extracción de PDF ---
-    with pdfplumber.open(pdf_file) as pdf:
-        text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+# Función de extracción
+def procesar_archivos(pdf, log):
+    # Extraer de PDF
+    with pdfplumber.open(pdf) as p:
+        texto = "\n".join([page.extract_text() for page in p.pages if page.extract_text()])
     
-    # Búsqueda de Tiempos y Nose
-    out_time = re.search(r"OUT\s+(\d{2}:\d{2})", text)
-    in_time = re.search(r"IN\s+(\d{2}:\d{2})", text)
-    nose = re.search(r"Nose\s+(\d+)", text)
-    
-    # Búsqueda de Pasajeros (F, J, O, Y)
-    pax_dict = {}
+    # Buscar Pasajeros (F, J, O, Y)
+    pax = {}
     for c in ["F", "J", "O", "Y"]:
-        m = re.search(fr"{c}\s+Class\s+(\d+)", text)
-        pax_dict[c] = int(m.group(1)) if m else 0
-
-    # --- Extracción de CSV (WHLCHR) ---
-    df_log = pd.read_csv(log_file)
+        m = re.search(fr"{c} Class\s+(\d+)", texto)
+        pax[c] = int(m.group(1)) if m else 0
+    
+    # Buscar Tiempos
+    out_t = re.search(r"OUT\s+(\d{2}:\d{2})", texto)
+    in_t = re.search(r"IN\s+(\d{2}:\d{2})", texto)
+    
+    # Extraer de Log (CSV)
+    df_log = pd.read_csv(log)
     whcr = 0
-    for desc in df_log.iloc[:, 3].astype(str): # Columna 'Transaction Description'
-        if "whcr" in desc.lower():
-            m_whcr = re.search(r'(\d+)\s*whcr', desc.lower())
-            if m_whcr: whcr = int(m_whcr.group(1))
-
-    # --- Extracción de Cargo ---
-    # Sumamos la columna de peso (ajustar según tu archivo de cargo)
-    df_cargo = pd.read_csv(cargo_file)
-    peso_total = df_cargo.iloc[:, 1].sum() if not df_cargo.empty else 0
-
+    for row in df_log.iloc[:, 3].astype(str): # Columna 'Transaction Description'
+        if "whcr" in row.lower():
+            match = re.search(r'(\d+)\s*whcr', row.lower())
+            if match: whcr = int(match.group(1))
+            
     return {
-        "Fecha": pd.Timestamp.now().strftime("%Y-%m-%d"),
-        "Nose": nose.group(1) if nose else "N/A",
-        "OUT": out_time.group(1) if out_time else "",
-        "IN": in_time.group(1) if in_time else "",
-        "Pax_F": pax_dict["F"], "Pax_J": pax_dict["J"], 
-        "Pax_O": pax_dict["O"], "Pax_Y": pax_dict["Y"],
-        "WHLCHR": whcr,
-        "Cargo_LBS": peso_total
+        "Vuelo": "UA818",
+        "OUT": out_t.group(1) if out_t else "",
+        "IN": in_t.group(1) if in_t else "",
+        "F": pax["F"], "J": pax["J"], "O": pax["O"], "Y": pax["Y"],
+        "Total": sum(pax.values()),
+        "WHLCHR": whcr
     }
 
-# --- INTERFAZ ---
-st.title("✈️ Ops Stats EZE Automator")
+# Interfaz
+up_pdf = st.file_uploader("1. Subir PDF Flight Info", type="pdf")
+up_log = st.file_uploader("2. Subir CSV Event Log", type="csv")
 
-up_pdf = st.file_uploader("Subir PDF Flight Info", type="pdf")
-up_log = st.file_uploader("Subir CSV Event Log", type="csv")
-up_cargo = st.file_uploader("Subir CSV Cargo", type="csv")
-
-if up_pdf and up_log and up_cargo:
-    try:
-        res = extract_data(up_pdf, up_log, up_cargo)
-        df_row = pd.DataFrame([res])
-        st.write("### Vista previa de los datos extraídos:")
-        st.table(df_row)
-        
-        if st.button("🚀 Enviar a Google Sheets"):
-            existing = conn.read()
-            updated = pd.concat([existing, df_row], ignore_index=True)
-            conn.update(data=updated)
-            st.success("✅ ¡Guardado en Google Sheets!")
-    except Exception as e:
-        st.error(f"Hubo un problema procesando los archivos: {e}")
+if up_pdf and up_log:
+    res = procesar_archivos(up_pdf, up_log)
+    df_new = pd.DataFrame([res])
+    st.table(df_new)
+    
+    if st.button("🚀 Enviar a Google Sheets"):
+        try:
+            # Leer lo que hay en el Sheet
+            df_actual = conn.read()
+            # Unir con lo nuevo
+            df_final = pd.concat([df_actual, df_new], ignore_index=True)
+            # Guardar
+            conn.update(data=df_final)
+            st.success("¡Datos guardados!")
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
